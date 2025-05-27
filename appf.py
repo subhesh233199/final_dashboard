@@ -640,41 +640,6 @@ EXAMPLE INPUT:
         ...
     }}
 }}
-EXAMPLE OUTPUT:
-{{
-    "metrics": {{
-        "Open ALL RRR Defects": {{
-            "ATLS": [
-                {{"version": "{versions_for_example[0]}", "value": 10, "status": "RISK", "trend": "→"}},
-                {{"version": "{versions_for_example[1]}", "value": 8, "status": "MEDIUM RISK", "trend": "↓ (20.0%)"}},
-                {{"version": "{versions_for_example[2]}", "value": 5, "status": "ON TRACK", "trend": "↓ (37.5%)"}}
-            ],
-            "BTLS": [
-                {{"version": "{versions_for_example[0]}", "value": 12, "status": "RISK", "trend": "→"}},
-                {{"version": "{versions_for_example[1]}", "value": 9, "status": "MEDIUM RISK", "trend": "↓ (25.0%)"}},
-                {{"version": "{versions_for_example[2]}", "value": 6, "status": "ON TRACK", "trend": "↓ (33.3%)"}}
-            ]
-        }},
-        "Customer Specific Testing (UAT)": {{
-            "RBS": [
-                {{"version": "{versions_for_example[0]}", "pass_count": 50, "fail_count": 5, "status": "ON TRACK", "pass_rate": 90.9, "trend": "→"}},
-                {{"version": "{versions_for_example[1]}", "pass_count": 48, "fail_count": 6, "status": "MEDIUM RISK", "pass_rate": 88.9, "trend": "↓ (2.0%)"}},
-                {{"version": "{versions_for_example[2]}", "pass_count": 52, "fail_count": 4, "status": "ON TRACK", "pass_rate": 92.9, "trend": "↑ (4.0%)"}}
-            ],
-            "Tesco": [
-                {{"version": "{versions_for_example[0]}", "pass_count": 45, "fail_count": 3, "status": "ON TRACK", "pass_rate": 93.8, "trend": "→"}},
-                {{"version": "{versions_for_example[1]}", "pass_count": 46, "fail_count": 2, "status": "ON TRACK", "pass_rate": 95.8, "trend": "↑ (2.0%)"}},
-                {{"version": "{versions_for_example[2]}", "pass_count": 47, "fail_count": 1, "status": "ON TRACK", "pass_rate": 97.9, "trend": "↑ (2.1%)"}}
-            ],
-            "Belk": [
-                {{"version": "{versions_for_example[0]}", "pass_count": 40, "fail_count": 7, "status": "MEDIUM RISK", "pass_rate": 85.1, "trend": "→"}},
-                {{"version": "{versions_for_example[1]}", "pass_count": 42, "fail_count": 5, "status": "ON TRACK", "pass_rate": 89.4, "trend": "↑ (4.3%)"}},
-                {{"version": "{versions_for_example[2]}", "pass_count": 43, "fail_count": 4, "status": "ON TRACK", "pass_rate": 91.5, "trend": "↑ (2.1%)"}}
-            ]
-        }},
-        ...
-    }}
-}}
 Only return valid JSON.""",
         agent=analyst,
         async_execution=True,
@@ -988,24 +953,28 @@ def enhance_report_markdown(md_text):
     )
 
     # Ensure consistent separator lines after headers. This assumes a certain number of columns.
-    # We need to ensure the separator line has the correct number of dashes for the columns.
+    # We use a non-greedy match to avoid matching across multiple tables.
     # For 4-column tables:
-    cleaned = re.sub(r'(\|.*?\|)\n\s*([-]+\s*\|?\s*[-]+)\s*$', r'\1\n|---|---|---|---|', cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r'(\|.*?\|)\n\s*([-]+\s*\|?\s*[-]+)(?=\s*\n|$)', r'\1\n|---|---|---|---|', cleaned, flags=re.MULTILINE)
     # For 6-column UAT tables:
-    cleaned = re.sub(r'(\|.*?\|)\n\s*([-]+\s*\|?\s*[-]+)\s*$', r'\1\n|---|---|---|---|---|---|', cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r'(\|.*?\|)\n\s*([-]+\s*\|?\s*[-]+)(?=\s*\n|$)', r'\1\n|---|---|---|---|---|---|', cleaned, flags=re.MULTILINE)
 
     # Add missing initial pipes to rows that look like table data but are missing it
-    # This targets lines that start with non-whitespace, then have some content, and then a pipe
-    # but might be missing the initial pipe.
-    cleaned = re.sub(r'^\s*([^\s\|].*?)\s*\|', r'| \1 |', cleaned, flags=re.MULTILINE)
-    
-    # Ensure all data cells are properly piped, but avoid over-piping.
-    # This tries to fix cases where cells might be separated by just spaces instead of pipes.
-    # It looks for patterns like 'value1   value2' and inserts pipes.
-    # This can be tricky and might require iteration if LLM output is very varied.
-    cleaned = re.sub(r'(\S)\s{2,}(\S)', r'\1 | \2', cleaned) # Replace multiple spaces between non-pipes with ' | '
+    # This looks for lines that seem like they should be table rows (contain ' | ') but don't start with '|'
+    cleaned = re.sub(r'^(?!\s*\|)(.*?\|.*?\|.*?\|.*?)\s*$', r'| \1', cleaned, flags=re.MULTILINE) # For 4-column-like
+    cleaned = re.sub(r'^(?!\s*\|)(.*?\|.*?\|.*?\|.*?\|.*?\|.*?)\s*$', r'| \1', cleaned, flags=re.MULTILINE) # For 6-column-like
 
-    # Ensure single spaces around pipes for consistent rendering.
+    # Ensure all data cells are properly piped, but avoid over-piping.
+    # This targets sequences of non-pipe characters separated by one or more spaces, potentially at line end
+    # and ensures they are surrounded by pipes.
+    cleaned = re.sub(r'([^|])\s{2,}([^|])', r'\1 | \2', cleaned) # Replace multiple spaces between non-pipes with ' | '
+    cleaned = re.sub(r'\|\s*(\S.*?)\s*\|', r'| \1 |', cleaned) # Ensure one space after and before pipes
+    
+    # Add trailing pipes if missing on table rows (very common LLM markdown issue)
+    cleaned = re.sub(r'^(?!\|)(.*?\|.*?)$', r'| \1', cleaned, flags=re.MULTILINE) # Ensure starts with pipe
+    cleaned = re.sub(r'^(.*?\|.*?)(?<!\|)$', r'\1 |', cleaned, flags=re.MULTILINE) # Ensure ends with pipe
+    
+    # General cleanup for inconsistent spacing around pipes (do this last for pipes)
     cleaned = re.sub(r'\s*\|\s*', ' | ', cleaned)
     # Remove leading/trailing spaces on lines, after pipe normalization
     cleaned = re.sub(r'^\s+|\s+$', '', cleaned, flags=re.MULTILINE)
