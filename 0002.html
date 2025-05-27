@@ -342,15 +342,23 @@
             html = html.replace(/<strong>(↓\s*\([^<]+\))<\/strong>/gi, '<span class="trend-down">$1</span>');
             html = html.replace(/<strong>(→|→\s*\([^<]+\))<\/strong>/gi, '<span class="trend-neutral">$1</span>');
             
-            // Enhanced table handling
-            html = html.replace(/<table>/g, '<div class="table-responsive"><table class="table table-bordered">');
+            // Enhanced table handling with proper styling
+            html = html.replace(/<table>/g, '<div class="table-responsive"><table class="table table-bordered markdown-container">');
             html = html.replace(/<\/table>/g, '</table></div>');
             
             // Ensure all table cells are properly formatted
             html = html.replace(/<td>\s*<\/td>/g, '<td>&nbsp;</td>');
             
             // Add responsive wrapper for better mobile display
-            html = html.replace(/<img/g, '<img class="img-fluid"');
+            html = html.replace(/<img/g, '<img class="img-fluid visualization"');
+            
+            // Add proper heading styles
+            html = html.replace(/<h1>/g, '<h1 class="markdown-container">');
+            html = html.replace(/<h2>/g, '<h2 class="markdown-container">');
+            html = html.replace(/<h3>/g, '<h3 class="markdown-container">');
+            
+            // Wrap the entire content in a markdown container
+            html = `<div class="markdown-container">${html}</div>`;
             
             return html;
         }
