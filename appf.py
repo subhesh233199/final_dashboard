@@ -695,6 +695,18 @@ Only return valid JSON.""",
         memory=True,
     )
 
+    # Corrected slices for EXPECTED_METRICS
+    atls_btls_metrics_list = [
+        "Open ALL RRR Defects", "Open Security Defects", "All Open Defects (T-1)",
+        "All Security Open Defects", "Load/Performance"
+    ]
+    coverage_metrics_list = [
+        "E2E Test Coverage", "Automation Test Coverage", "Unit Test Coverage"
+    ]
+    other_metrics_list = [
+        "Defect Closure Rate", "Regression Issues"
+    ]
+
     visualization_task = Task(
         description=f"""Create a standalone Python script that:
 1. Accepts the provided 'metrics' JSON structure as input.
@@ -719,9 +731,9 @@ Only return valid JSON.""",
 10. Ensure exactly 10 charts are generated for the listed metrics, plus additional charts for Pass/Fail metrics if present.
 11. For grouped bar charts, use distinct colors for ATLS and BTLS (e.g., blue for ATLS, orange for BTLS) and include a legend.
 12. Use the following metric lists for iteration:
-    atls_btls_metrics = {EXPECTED_METRICS[:5]}
-    coverage_metrics = {EXPECTED_METRICS[5:8]}
-    other_metrics = {EXPECTED_METRICS[8:10]}
+    atls_btls_metrics = {json.dumps(atls_btls_metrics_list)} # Corrected embedding
+    coverage_metrics = {json.dumps(coverage_metrics_list)}   # Corrected embedding
+    other_metrics = {json.dumps(other_metrics_list)}         # Corrected embedding
     Do not use a variable named 'expected_metrics'.
 13. Use versions: {', '.join(f'"{v}"' for v in versions)}""",
         agent=visualizer,
@@ -957,54 +969,63 @@ def enhance_report_markdown(md_text):
     cleaned = re.sub(r'^```markdown\n|\n```$', '', md_text, flags=re.MULTILINE)
     
     # --- CRITICAL FIX 1: Remove annotations ---
+    # This must be done early as they interfere with other regexes
     cleaned = re.sub(r'\', '', cleaned)
 
     # --- CRITICAL FIX 2: Ensure correct table header and row pipes ---
-    # This specifically addresses the broken header line from mrkdown.txt
-    # Example: | Release | \n Value | Trend | Status |  --> | Release | Value | Trend | Status |
-    cleaned = re.sub(r'\|\s*Release\s*\|\s*\n\s*Value\s*\|\s*Trend\s*\|\s*Status\s*\|', '| Release | Value | Trend | Status |', cleaned)
-    cleaned = re.sub(r'\|\s*Release\s*\|\s*\n\s*Pass Count\s*\|\s*Fail Count\s*\|\s*Pass Rate \(%\)\s*\|\s*Trend\s*\|\s*Status\s*\|', '| Release | Pass Count | Fail Count | Pass Rate (%) | Trend | Status |', cleaned)
+    # Fix broken table headers (e.g., from mrkdown.txt example)
+    # Fix for standard 4-column tables (Release, Value, Trend, Status)
+    cleaned = re.sub(
+        r'\|\s*Release\s*\|\s*\n\s*Value\s*\|\s*Trend\s*\|\s*Status\s*\|',
+        '| Release | Value | Trend | Status |',
+        cleaned
+    )
+    # Fix for UAT 6-column tables (Release, Pass Count, Fail Count, Pass Rate (%), Trend, Status)
+    cleaned = re.sub(
+        r'\|\s*Release\s*\|\s*\n\s*Pass Count\s*\|\s*Fail Count\s*\|\s*Pass Rate \(%\)\s*\|\s*Trend\s*\|\s*Status\s*\|',
+        '| Release | Pass Count | Fail Count | Pass Rate (%) | Trend | Status |',
+        cleaned
+    )
 
-    # Ensure consistent separator lines after headers
-    cleaned = re.sub(r'(\|.*?\|)\n\s*([-]+\s*\|?\s*[-]+)', r'\1\n|---|---|---|---|---|---|', cleaned) # For UAT tables (6 columns)
-    cleaned = re.sub(r'(\|.*?\|)\n\s*([-]+\s*\|?\s*[-]+)', r'\1\n|---|---|---|---|', cleaned) # For 4-column tables (like Value/Trend/Status)
+    # Ensure consistent separator lines after headers. This assumes a certain number of columns.
+    # We need to ensure the separator line has the correct number of dashes for the columns.
+    # For 4-column tables:
+    cleaned = re.sub(r'(\|.*?\|)\n\s*([-]+\s*\|?\s*[-]+)\s*$', r'\1\n|---|---|---|---|', cleaned, flags=re.MULTILINE)
+    # For 6-column UAT tables:
+    cleaned = re.sub(r'(\|.*?\|)\n\s*([-]+\s*\|?\s*[-]+)\s*$', r'\1\n|---|---|---|---|---|---|', cleaned, flags=re.MULTILINE)
 
-    # Ensure each table data row starts and ends with a pipe and has pipes between all columns
-    # This is a more aggressive regex to fix common table malformations from LLM
-    # It tries to ensure a pipe at the start, between elements, and at the end of what looks like a table row
-    def fix_table_row(match):
-        row_content = match.group(1).strip()
-        # Split by multiple spaces or single pipe (handle cases where pipes are missing)
-        cells = [cell.strip() for cell in re.split(r'\s{2,}|(?<!\\)\|', row_content) if cell.strip()]
-        return '| ' + ' | '.join(cells) + ' |'
-
-    # Apply to lines that are likely table data rows but might be malformed
-    cleaned = re.sub(r'^(?!\|)(.+?)(?=\s*\n|$)', fix_table_row, cleaned, flags=re.MULTILINE)
+    # Add missing initial pipes to rows that look like table data but are missing it
+    # This targets lines that start with non-whitespace, then have some content, and then a pipe
+    # but might be missing the initial pipe.
+    cleaned = re.sub(r'^\s*([^\s\|].*?)\s*\|', r'| \1 |', cleaned, flags=re.MULTILINE)
     
-    # Clean up excess spaces around pipes after initial fix
+    # Ensure all data cells are properly piped, but avoid over-piping.
+    # This tries to fix cases where cells might be separated by just spaces instead of pipes.
+    # It looks for patterns like 'value1   value2' and inserts pipes.
+    # This can be tricky and might require iteration if LLM output is very varied.
+    cleaned = re.sub(r'(\S)\s{2,}(\S)', r'\1 | \2', cleaned) # Replace multiple spaces between non-pipes with ' | '
+
+    # Ensure single spaces around pipes for consistent rendering.
     cleaned = re.sub(r'\s*\|\s*', ' | ', cleaned)
-    # Ensure there's a pipe at the beginning of content that looks like a table row (and not a header or separator)
-    cleaned = re.sub(r'^(?!\s*\|[-\s]+|\s*#)([^|\n]+)\s*\|\s*([^|\n]+)\s*\|\s*([^|\n]+)\s*\|\s*([^|\n]+)\s*$', r'| \1 | \2 | \3 | \4 |', cleaned, flags=re.MULTILINE)
-    cleaned = re.sub(r'^(?!\s*\|[-\s]+|\s*#)([^|\n]+)\s*\|\s*([^|\n]+)\s*\|\s*([^|\n]+)\s*\|\s*([^|\n]+)\s*\|\s*([^|\n]+)\s*\|\s*([^|\n]+)\s*$', r'| \1 | \2 | \3 | \4 | \5 | \6 |', cleaned, flags=re.MULTILINE)
+    # Remove leading/trailing spaces on lines, after pipe normalization
+    cleaned = re.sub(r'^\s+|\s+$', '', cleaned, flags=re.MULTILINE)
+
 
     # Clean invalid trend symbols (e.g., '4', 't', '/')
     cleaned = re.sub(r'\b[4t/]\b', '→', cleaned)  # Replace stray symbols with arrow
     
-    # Collapse multiple spaces, but be careful not to break table alignment if LLM adds padding
-    # This might need to be fine-tuned or removed if it causes new issues
-    # cleaned = re.sub(r'\s{2,}', ' ', cleaned)
-
     # Enhance statuses
     status_map = {
         "MEDIUM RISK": "**MEDIUM RISK**",
         "HIGH RISK": "**HIGH RISK**",
         "LOW RISK": "**LOW RISK**",
-        "ON TRACK": "**ON TRACK**"
+        "ON TRACK": "**ON TRACK**",
+        "NEEDS REVIEW": "**NEEDS REVIEW**" # Ensure NEEDS REVIEW is also handled
     }
     for k, v in status_map.items():
         cleaned = cleaned.replace(k, v)
     
-    # Fix headers and list items
+    # Fix headers and list items - ensuring a consistent newline after them
     cleaned = re.sub(r'^#\s+(.+)$', r'# \1\n', cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r'^##\s+(.+)$', r'## \1\n', cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r'^\s*-\s+(.+)', r'- \1', cleaned, flags=re.MULTILINE)
@@ -1036,7 +1057,7 @@ def run_fallback_visualization(metrics: Dict[str, Any]):
                 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
                 handler.setFormatter(formatter)
                 fallback_logger.addHandler(handler)
-            logger.info("Starting fallback visualization") # Using main logger for overall info
+            fallback_logger.info("Starting fallback visualization") # Using fallback_logger here
 
             if not metrics or 'metrics' not in metrics or not isinstance(metrics['metrics'], dict):
                 fallback_logger.error(f"Invalid metrics data for fallback: {metrics}")
@@ -1428,7 +1449,7 @@ async def analyze_pdfs(request: FolderPathRequest):
         logger.error(f"Error in /analyze endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        plt.close('all')
+        plt.close('all') # Ensure all matplotlib figures are closed
 
 app.mount("/visualizations", StaticFiles(directory="visualizations"), name="visualizations")
 
